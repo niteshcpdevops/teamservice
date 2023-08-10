@@ -1,0 +1,91 @@
+- name: Check For Tomcat Directory
+  stat:
+    path: "{{ tomcat_dir_path }}"
+  register: tomcat_dir_path_stats
+
+- name: Create Tomcat Directory
+  file:
+    state: directory
+    path: "{{ tomcat_dir_path }}"
+    mode: 0755
+    owner: ec2-user
+    group: ec2-user
+    recurse: yes
+  when: not tomcat_dir_path_stats.stat.exists
+
+- name: Check For Tomcat Directory Again
+  stat:
+    path: "{{ tomcat_dir_path }}"
+  register: tomcat_dir_path_stats
+
+- name: Download and Extract Tomcat Archive
+  unarchive:
+    src: "{{ tomcat_archive_remote_link }}"
+    dest: "{{ tomcat_dir_path }}"
+    remote_src: yes
+    extra_opts: [--strip-components=1]
+  when: tomcat_dir_path_stats.stat.exists
+
+- name: Give recursive permissions to tomcat directory
+  file:
+    state: directory
+    path: "{{ tomcat_dir_path }}"
+    mode: 0755
+    owner: ec2-user
+    group: ec2-user
+    recurse: yes
+  when: tomcat_dir_path_stats.stat.exists
+
+- name: Tomcat Service File
+  become: yes
+  copy:
+    src: tomcat.service
+    dest: "{{ tomcat_service_dest }}"
+
+- name: Change The Port Of the Tomcat
+  community.general.xml:
+    path: "{{ tomcat_conf_server_xml }}"
+    xpath: /Server/Service/Connector
+    attribute: port
+    value: "{{ tomcat_port }}"
+
+- name: Install Java for Tomcat
+  become: yes
+  yum:
+    name: java
+    state: present
+
+- name: Reload the systemd to re-read configurations
+  become: yes
+  systemd:
+    daemon-reload: yes
+
+- name: Check For Tomcat Service
+  service_facts:
+  register: tomcat_service_status
+
+- name: Deploy Sample Tomcat Application
+  get_url:
+    url: "{{ tomcat_sample_war_url }}"
+    dest: "{{ tomcat_webapps_dir_path }}"
+
+- name: Restart Tomcat Service
+  service:
+    name: tomcat
+    state: restarted
+  when: tomcat_service_status['ansible_facts']['services']['tomcat.service'] is defined and tomcat_service_status['ansible_facts']['services']['tomcat.service']['state'] == 'running'
+
+- name: Start Tomcat Service
+  service:
+    name: tomcat
+    state: started
+  when: tomcat_service_status['ansible_facts']['services']['tomcat.service'] is defined and not tomcat_service_status['ansible_facts']['services']['tomcat.service']['state'] == 'running'
+
+- name: Connect To Tomcat Server Port "{{ tomcat_port }}" and check status 200 - Try 5 times
+  tags: test
+  uri:
+    url: "http://{{ tomcat_host }}:{{ tomcat_port }}"
+  register: result
+  until: "result.status == 200"
+  retries: 5
+  delay: 10
